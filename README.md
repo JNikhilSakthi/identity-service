@@ -1,181 +1,333 @@
 # identity-service
 
-Enterprise SSO groundwork: a Spring Boot resource server designed to sit behind Keycloak as the single source of truth for authentication and authorization.
+**Enterprise SSO for a REST API, powered by Keycloak — the app never sees a password, only a JWT it can cryptographically verify.**
 
 ![Java](https://img.shields.io/badge/Java-21-orange)
 ![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.4-brightgreen)
 ![Keycloak](https://img.shields.io/badge/Keycloak-25.0.6-blue)
-![MySQL](https://img.shields.io/badge/MySQL-8-lightblue)
-![Flyway](https://img.shields.io/badge/Flyway-DB%20Migrations-red)
-![License](https://img.shields.io/badge/license-MIT-lightgrey)
+![Maven](https://img.shields.io/badge/Build-Maven-red)
+![Docker](https://img.shields.io/badge/Container-Docker-2496ED)
+![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
 > **Learning Track:** `springboot-keycloak-sso-demo` (Project 4 of 17)
 > **Real-World Service Name:** `identity-service`
 
 ---
 
-## Status: Work in Progress
+## Table of Contents
 
-This repository is being built in stages. **What you're looking at right now is Stage 1: the build skeleton** — the Maven project definition, dependency set, and container image build for the service. The Spring Boot application source (security config, controllers, entities, `application.yml`, Keycloak realm import, `docker-compose.yml`) is the next stage and will land in a follow-up commit.
-
-Documenting this honestly (rather than inventing endpoints/config that don't exist yet) is deliberate: this README describes exactly what is in the repository today, and flags clearly what's still to come, so nothing below misleads you about the actual state of the code.
+1. [Project Overview](#1-project-overview)
+2. [Architecture](#2-architecture)
+3. [Tech Stack](#3-tech-stack)
+4. [Configuration Explained](#4-configuration-explained)
+5. [Project Structure Explained](#5-project-structure-explained)
+6. [Getting Started](#6-getting-started)
+7. [API Documentation](#7-api-documentation)
+8. [Testing](#8-testing)
+9. [Docker](#9-docker)
+10. [Interview Preparation](#10-interview-preparation)
+11. [License](#11-license)
 
 ---
 
 ## 1. Project Overview
 
-### The problem this service solves
+### The problem
 
-In a multi-application enterprise (HR portal, billing dashboard, internal admin tools, partner APIs, ...), letting every application own its own username/password store is a liability: password resets, MFA, session revocation, and audit trails all have to be reimplemented per app, and a breach in the weakest app's login form compromises the same credentials everywhere.
+Every service that needs to know "who is calling, and what are they allowed to do" faces the same set of hard problems: securely storing passwords, issuing and rotating tokens, handling password resets and MFA, session/logout semantics, brute-force protection, and — the moment you have more than one service — making sure *all of them* trust the same identity without duplicating that logic everywhere.
 
-**Single Sign-On (SSO)** solves this by centralizing authentication in one identity provider. A user logs in once; every downstream application trusts a signed token issued by that identity provider instead of managing its own password database.
+`identity-service` demonstrates the standard enterprise answer: **don't build any of that**. Delegate identity entirely to **Keycloak**, an open-source Identity and Access Management (IAM) server, and make the Spring Boot application a pure **OAuth2 Resource Server** — a service whose only security responsibility is validating a signed token and checking the roles inside it.
 
-### Why Keycloak
+### Why Keycloak instead of rolling your own auth
 
-Keycloak is an open-source Identity and Access Management (IAM) server built on the OpenID Connect (OIDC) / OAuth2 and SAML2 standards. It gives you, out of the box:
+This roadmap already has a project dedicated to hand-rolled JWT auth (`springboot-jwt-auth-demo`, project 2) and one for social login (`springboot-oauth2-login-demo`, project 3). Project 4 exists to show the step *beyond* those: what a real enterprise reaches for once it needs more than "one app, one login form."
 
-- A hosted login page, user federation (LDAP/AD), and social login, with no custom auth code.
-- Realm-based multi-tenancy — one Keycloak instance can serve many independent applications/organizations ("realms").
-- Fine-grained authorization: realm roles, client roles, and group-based role mapping.
-- Standards-compliant tokens (JWT access tokens, refresh tokens, ID tokens) that any OAuth2/OIDC-aware framework — including Spring Security's `oauth2-resource-server` — can validate without talking to Keycloak on every request (signature + JWKS-based validation).
+| Concern | Hand-rolled JWT | Keycloak |
+|---|---|---|
+| Password storage & hashing | You own the risk | Keycloak owns it |
+| Login UI, MFA, password reset, brute-force lockout | You build it | Built in |
+| Multiple apps trusting one identity (SSO) | You wire it yourself, per app | Native: one login, every app trusts the same realm |
+| Social login, LDAP/Active Directory, SAML federation | Custom integration per provider | Configured, not coded |
+| Central place to disable a compromised user across *every* app | Doesn't exist unless you build it | Disable once in Keycloak, every app is instantly locked out |
+| Auditing who logged in where | Custom | Built-in admin console + events |
 
-`identity-service`'s role in this architecture is **not** to replace Keycloak — it's the Spring Boot side of the handshake: a resource server that validates the JWTs Keycloak issues, plus (via the `keycloak-admin-client` dependency already in the POM) an administrative layer for programmatically managing users/roles in Keycloak from application code (e.g. self-service registration flows, provisioning users from an internal HR system).
+The trade-off: you now depend on an external IAM server and must get token validation (signature, expiry, issuer) exactly right. That subtlety — specifically the Docker networking issue where "the address a token was issued from" and "the address a container reaches Keycloak at" differ — is the central engineering lesson of this project (see [Interview Preparation](#10-interview-preparation)).
 
-### Where this pattern shows up in real companies
+### Where this is used in real companies
 
-- **Internal enterprise SSO**: employees log into Okta/Keycloak/Azure AD once and get access to Jira, Confluence, internal dashboards, VPN portals, etc., without re-entering credentials.
-- **B2B SaaS platforms**: a vendor exposes "Login with your company SSO" so each enterprise customer can federate through their own identity provider (SAML/OIDC) instead of the vendor managing per-customer passwords.
-- **Microservice ecosystems**: instead of every microservice validating a username/password, each service is a stateless OAuth2 resource server that only checks a JWT's signature and scopes/roles — this is precisely the `spring-boot-starter-oauth2-resource-server` pattern used here.
-- **Regulated industries (banking, healthcare)**: centralizing auth in a hardened IAM product (rather than bespoke code) is often a compliance requirement (SOC 2, HIPAA, PCI-DSS) because audit, MFA enforcement, and session/token revocation live in one place.
+This exact pattern (Spring Boot resource server + Keycloak realm) is common in:
+- **Internal enterprise tools** (HR portals, admin dashboards, internal APIs) where a company already runs Keycloak/Active Directory/Okta as its single sign-on provider and every new microservice just plugs into it.
+- **Multi-tenant B2B platforms**, using one Keycloak *realm per tenant* for isolation.
+- **Microservice architectures**, where dozens of services all trust the same realm instead of each maintaining its own user table — exactly the direction this 17-project roadmap is building toward.
+
+### The business domain
+
+To keep the demo concrete, the protected resource is a **Document** — a stand-in for an internal knowledge-base article, HR policy, or onboarding doc. The interesting part isn't the CRUD; it's the authorization layered on top of it via Keycloak **realm roles**:
+
+- **`USER`** — can create and read documents
+- **`ADMIN`** — can create, read, update, and delete documents
 
 ---
 
 ## 2. Architecture
 
-### High-Level Design (target architecture for this service)
+### High-Level Design (HLD)
 
 ```
-                                   ┌─────────────────────────┐
-                                   │        Keycloak          │
-                                   │  (Identity Provider /    │
-                                   │   Authorization Server)  │
-                                   │                           │
-                                   │  Realm: enterprise-sso    │
-                                   │  - Users / Roles / Groups │
-                                   │  - Login UI, MFA          │
-                                   │  - Token issuance (JWT)   │
-                                   └────────────┬──────────────┘
-                                                │
-                        1. Login redirect        │  4. JWKS (public keys)
-                        2. Auth code → token      │     for signature verification
-                                                │
-        ┌───────────────┐   3. Bearer JWT   ┌────▼─────────────────┐
-        │   Client App   │ ────────────────► │   identity-service    │
-        │ (Web/Mobile/   │ ◄──────────────── │  (Spring Boot          │
-        │  Partner API)  │   5. API response │   Resource Server)     │
-        └───────────────┘                    │                        │
-                                              │ - Validates JWT sig    │
-                                              │ - Enforces roles/scopes│
-                                              │ - Keycloak Admin Client│
-                                              │   for user provisioning│
-                                              └───────────┬────────────┘
-                                                          │
-                                                          │ JDBC (Flyway-migrated)
-                                                          ▼
-                                                  ┌───────────────┐
-                                                  │     MySQL      │
-                                                  │ (app-owned data,│
-                                                  │ NOT credentials)│
-                                                  └───────────────┘
+                        ┌─────────────────────────────┐
+                        │           Client            │
+                        │   (curl / Postman / SPA)     │
+                        └───────────────┬──────────────┘
+                                        │
+                    (1) POST /realms/identity-realm/protocol/openid-connect/token
+                        username + password + client_id + client_secret
+                                        │
+                                        ▼
+                        ┌─────────────────────────────┐
+                        │           Keycloak           │
+                        │   realm: identity-realm      │
+                        │   - client: identity-service │
+                        │   - roles: USER, ADMIN        │
+                        │   - users: admin-user,        │
+                        │            regular-user       │
+                        └───────────────┬──────────────┘
+                                        │
+                       (2) signed JWT access_token
+                           (iss, sub, preferred_username,
+                            realm_access.roles, exp, ...)
+                                        │
+                                        ▼
+                        ┌─────────────────────────────┐
+                        │           Client              │
+                        └───────────────┬──────────────┘
+                                        │
+                (3) GET/POST/PUT/DELETE /api/v1/documents
+                     Authorization: Bearer <access_token>
+                                        │
+                                        ▼
+                        ┌─────────────────────────────┐
+                        │       identity-service        │
+                        │  (OAuth2 Resource Server)      │
+                        │                                 │
+                        │  - Verify JWT signature via     │
+                        │    Keycloak's public JWK set    │
+                        │  - Verify `iss` (issuer) claim   │
+                        │  - Verify `exp` (not expired)     │
+                        │  - Map realm_access.roles ->      │
+                        │    ROLE_USER / ROLE_ADMIN          │
+                        │  - Enforce @PreAuthorize per        │
+                        │    endpoint                          │
+                        └───────────────┬──────────────────────┘
+                                        │
+                                        ▼
+                             ┌───────────────────┐
+                             │   H2 (in-memory)   │
+                             │   documents table   │
+                             └───────────────────┘
 ```
 
-Key point: MySQL here stores **application data** (e.g. profile extensions, audit logs, provisioning records) — never passwords. Credentials, sessions, and MFA state live entirely inside Keycloak's own store.
+**Critical property:** identity-service *never* talks to Keycloak to check "is this password right" — it never even sees a password. It only ever fetches Keycloak's **public keys** (JWKs) once, and then verifies token signatures locally, offline, for every request. This is what makes JWT-based SSO horizontally scalable: any number of resource servers can validate tokens without a network round-trip to the identity provider per request.
 
-### Low-Level Design (request flow, once security config lands)
+### Low-Level Design (LLD) — request flow inside the app
 
 ```
-Client                identity-service                Keycloak
-  │  GET /api/... + Bearer <JWT>                          │
-  ├───────────────────────►│                              │
-  │                        │  JwtDecoder fetches/caches   │
-  │                        │  JWKS from Keycloak realm    │
-  │                        │  issuer-uri endpoint         │
-  │                        ├─────────────────────────────►│
-  │                        │◄─────────────────────────────┤
-  │                        │  (public signing keys)       │
-  │                        │                              │
-  │                        │  Validate signature, exp,    │
-  │                        │  iss claim                   │
-  │                        │  Map realm_access.roles →    │
-  │                        │  GrantedAuthority             │
-  │                        │  SecurityFilterChain enforces │
-  │                        │  @PreAuthorize / role rules   │
-  │                        │                              │
-  │◄───────────────────────┤  200 OK / 403 Forbidden       │
+HTTP Request
+    │
+    ▼
+Spring Security Filter Chain (SecurityConfig)
+    │
+    ├─ BearerTokenAuthenticationFilter
+    │     extracts "Authorization: Bearer <token>"
+    │
+    ├─ JwtDecoder (hand-built NimbusJwtDecoder bean)
+    │     - fetches signing keys from jwk-set-uri (Docker-internal address)
+    │     - verifies signature
+    │     - verifies `iss` claim against issuer-uri (external address)
+    │     - verifies `exp` / `nbf`
+    │     → throws JwtException -> RestAuthenticationEntryPoint -> 401 JSON
+    │
+    ├─ KeycloakRealmRoleConverter
+    │     reads jwt.claim("realm_access").roles
+    │     maps ["ADMIN","USER"] -> [ROLE_ADMIN, ROLE_USER] GrantedAuthority
+    │
+    ├─ Method Security (@PreAuthorize on each controller method)
+    │     hasRole('ADMIN') / hasAnyRole('USER','ADMIN')
+    │     → throws AccessDeniedException -> RestAccessDeniedHandler -> 403 JSON
+    │
+    ▼
+DocumentController
+    │
+    ▼
+DocumentService (business logic, @Transactional)
+    │
+    ▼
+DocumentRepository (Spring Data JPA)
+    │
+    ▼
+H2 in-memory database
 ```
 
-### Folder structure (current state of this repository)
+### Folder structure
 
 ```
 identity-service/
-├── pom.xml              # Maven build definition — dependencies, plugins, versions
-├── Dockerfile           # Multi-stage build → runnable container image
-├── .dockerignore        # Keeps the Docker build context small
-├── .gitignore           # Keeps build output / IDE files out of git
-└── README.md            # This file
+├── pom.xml
+├── Dockerfile
+├── docker-compose.yml
+├── keycloak/
+│   └── realm-import.json          # realm + client + roles + test users, auto-provisioned
+├── src/
+│   ├── main/
+│   │   ├── java/com/medha/identityservice/
+│   │   │   ├── IdentityServiceApplication.java
+│   │   │   ├── config/
+│   │   │   │   ├── SecurityConfig.java        # resource server + JwtDecoder + method security
+│   │   │   │   └── OpenApiConfig.java         # Swagger UI Bearer auth
+│   │   │   ├── controller/
+│   │   │   │   ├── DocumentController.java    # CRUD, role-gated
+│   │   │   │   └── UserInfoController.java    # /me whoami endpoint
+│   │   │   ├── dto/
+│   │   │   │   ├── DocumentRequest.java
+│   │   │   │   ├── DocumentResponse.java
+│   │   │   │   ├── ErrorResponse.java
+│   │   │   │   └── UserInfoResponse.java
+│   │   │   ├── entity/
+│   │   │   │   └── Document.java
+│   │   │   ├── exception/
+│   │   │   │   ├── GlobalExceptionHandler.java
+│   │   │   │   └── ResourceNotFoundException.java
+│   │   │   ├── repository/
+│   │   │   │   └── DocumentRepository.java
+│   │   │   ├── security/
+│   │   │   │   ├── KeycloakRealmRoleConverter.java
+│   │   │   │   ├── RestAuthenticationEntryPoint.java   # 401 JSON body
+│   │   │   │   └── RestAccessDeniedHandler.java        # 403 JSON body
+│   │   │   └── service/
+│   │   │       ├── DocumentService.java
+│   │   │       └── DocumentServiceImpl.java
+│   │   └── resources/
+│   │       └── application.yml
+│   └── test/
+│       └── java/com/medha/identityservice/
+│           ├── IdentityServiceApplicationTests.java
+│           ├── controller/DocumentControllerSecurityTest.java
+│           └── service/DocumentServiceImplTest.java
 ```
 
-There is currently no `src/` directory. Once application code is added it will follow the standard Maven layout: `src/main/java/com/medha/identityservice/...` (config, controller, service, entity, repository packages), `src/main/resources/application.yml`, and `src/main/resources/db/migration/` for Flyway SQL scripts.
+### Request flow: token acquisition + validation, end to end
 
-### Database design
-
-Not yet defined — no entities or Flyway migration scripts exist in this commit. The POM already includes `flyway-core` and `flyway-mysql`, so migrations under `src/main/resources/db/migration/V1__*.sql` are expected in the next stage rather than JPA `ddl-auto` schema generation (Flyway is deliberately chosen over Hibernate auto-DDL for anything touching production-shaped data — it keeps schema changes reviewable and repeatable across environments).
+1. **Provisioning (startup, once):** `docker compose up` starts Keycloak with `--import-realm`. Keycloak reads `keycloak/realm-import.json` and creates the `identity-realm` realm, the `identity-service-client` client, the `USER`/`ADMIN` realm roles, and two users (`admin-user`, `regular-user`) — fully automatically, no console clicking.
+2. **Token acquisition:** A client (curl, Postman, a future SPA) POSTs credentials to Keycloak's token endpoint (`/realms/identity-realm/protocol/openid-connect/token`) using the [Resource Owner Password Credentials grant](#10-interview-preparation) and receives a signed JWT `access_token`.
+3. **Calling the API:** The client sends that token as `Authorization: Bearer <token>` to `identity-service`.
+4. **Validation:** identity-service's resource-server filter chain verifies the token's signature (against Keycloak's public JWKs), issuer, and expiry — all **without contacting Keycloak per request** (the JWKs are cached after the first fetch).
+5. **Authorization:** the realm roles embedded in the token (`realm_access.roles`) are mapped to Spring Security authorities and checked against each endpoint's `@PreAuthorize` rule.
+6. **Business logic:** if authorized, the request reaches `DocumentController` → `DocumentService` → `DocumentRepository` → H2.
 
 ---
 
 ## 3. Tech Stack
 
-| Layer | Technology | Version | Purpose |
-|---|---|---|---|
-| Language | Java | 21 | LTS release; used for records, virtual threads eligibility, pattern matching |
-| Framework | Spring Boot | 3.3.4 | Application framework (parent POM) |
-| Web | Spring Boot Starter Web | (managed by parent) | REST controllers, embedded Tomcat |
-| Persistence | Spring Boot Starter Data JPA | (managed by parent) | Repository/entity layer for app-owned data |
-| Security | Spring Boot Starter Security | (managed by parent) | Core security filter chain |
-| Auth | Spring Boot Starter OAuth2 Resource Server | (managed by parent) | Validates Keycloak-issued JWTs |
-| Identity Provider | Keycloak | 25.0.6 | Externalized IAM — login, tokens, realms, roles |
-| Admin SDK | keycloak-admin-client | 25.0.6 | Programmatic user/role management against Keycloak's Admin REST API |
-| Validation | Spring Boot Starter Validation | (managed by parent) | Bean Validation (`@Valid`, `@NotNull`, etc.) |
-| Observability | Spring Boot Starter Actuator | (managed by parent) | Health/metrics endpoints |
-| DB Migrations | Flyway (`flyway-core`, `flyway-mysql`) | (managed by parent) | Versioned, reviewable schema migrations |
-| Database | MySQL (`mysql-connector-j`) | 8.x runtime driver | Relational store for application-owned data |
-| API Docs | springdoc-openapi-starter-webmvc-ui | 2.6.0 | OpenAPI 3 spec + Swagger UI |
-| Boilerplate reduction | Lombok | (managed by parent, optional) | Getters/setters/builders via annotations |
-| Testing | spring-boot-starter-test, spring-security-test | (managed by parent) | Unit/integration test support, security test helpers |
-| Testing (integration) | Testcontainers (`junit-jupiter`, `mysql`), BOM 1.20.1 | 1.20.1 | Real MySQL instance in Docker for integration tests |
-| Packaging | spring-boot-maven-plugin | (managed by parent) | Builds the executable fat JAR, excludes Lombok from the runtime jar |
-| Containerization | Docker (multi-stage: `maven:3.9.9-eclipse-temurin-21` → `eclipse-temurin:21-jre-jammy`) | — | Reproducible build + minimal JRE-only runtime image |
+| Component | Choice | Why |
+|---|---|---|
+| Language | Java 21 | LTS, required by the roadmap |
+| Framework | Spring Boot 3.3.4 | Parent for all starters/versions |
+| Identity Provider | Keycloak 25.0.6 (`quay.io/keycloak/keycloak`) | Free, open-source, industry-standard OIDC/SAML IAM server |
+| Security | `spring-boot-starter-security` + `spring-boot-starter-oauth2-resource-server` | Resource-server-only; no login form, no session, no password ever touches this app |
+| Persistence | `spring-boot-starter-data-jpa` + H2 (in-memory) | Minimal on purpose — MySQL/JPA fundamentals already covered in project 1 (`springboot-jpa-crud-demo`); this project isolates Keycloak |
+| Validation | `spring-boot-starter-validation` (Jakarta Bean Validation) | `@NotBlank`/`@Size` on request DTOs |
+| API docs | springdoc-openapi (Swagger UI) | Interactive docs with Bearer-token "Try it out" |
+| Boilerplate reduction | Lombok | `@Data`/`@Builder` on the entity |
+| Observability | `spring-boot-starter-actuator` | `/actuator/health` |
+| Testing | JUnit 5, Mockito, `spring-security-test` | Unit tests for the service layer, `@WebMvcTest` + `SecurityMockMvcRequestPostProcessors.jwt()` for the security matrix |
+| Build | Maven | Multi-module-free single build |
+| Containers | Docker + Docker Compose | Keycloak + app, zero manual setup |
 
 ---
 
 ## 4. Configuration Explained
 
-No `application.yml` / `application.properties` file exists in the repository yet — that lands with the application source code in the next stage. What **is** already fixed by the build configuration:
+`src/main/resources/application.yml`:
 
-- **`pom.xml` → `<parent>` `spring-boot-starter-parent` `3.3.4`**: pins every Spring Boot managed dependency (Spring Framework, Tomcat, Jackson, etc.) to versions tested together, so you never hand-pick a mismatched combination.
-- **`<java.version>21</java.version>`**: tells `spring-boot-starter-parent` to compile with `--release 21`, and matches the JDK used in both Docker stages (`eclipse-temurin:21`) so the build and runtime JVMs agree exactly.
-- **`<keycloak.version>25.0.6</keycloak.version>`**: pins the `keycloak-admin-client` version explicitly (Spring Boot's BOM doesn't manage Keycloak artifacts), matched to the Keycloak server version this service is expected to talk to — the admin client's REST contract is version-sensitive, so client and server versions should stay aligned.
-- **`<springdoc.version>2.6.0</springdoc.version>`**: pinned separately because springdoc-openapi is also not part of Spring Boot's dependency management; 2.6.0 is the version compatible with Spring Boot 3.3.x/Spring Framework 6.1.x.
-- **`<finalName>identity-service</finalName>`** (in `<build>`): forces the packaged artifact to be `identity-service.jar` regardless of the Maven version coordinate, which is what the `Dockerfile`'s `COPY --from=build /workspace/target/identity-service.jar app.jar` line depends on — if this were removed, the jar name would become `identity-service-1.0.0.jar` and the Docker build would break.
-- **Lombok excluded from the repackaged jar** (`spring-boot-maven-plugin` → `<excludes>`): Lombok is a compile-time-only annotation processor; shipping it in the runtime fat jar would be dead weight, so it's explicitly excluded from repackaging while still being `optional` on the classpath for compilation.
-- **Testcontainers BOM `1.20.1`** (`<dependencyManagement>`): centralizes the version for `testcontainers-junit-jupiter` and `testcontainers-mysql` so both testing artifacts stay compatible with each other.
+```yaml
+server:
+  port: 8081
+```
+The app listens on 8081 (Keycloak takes the conventional 8080).
 
-When `application.yml` is added, expect (and this is the intended design, to be implemented next) properties such as:
-- `spring.datasource.url/username/password` — MySQL connection, environment-variable-driven so secrets never live in the file.
-- `spring.jpa.hibernate.ddl-auto: validate` — Hibernate should only *validate* the schema Flyway already migrated, never auto-generate it.
-- `spring.flyway.locations` — where migration scripts live.
-- `spring.security.oauth2.resourceserver.jwt.issuer-uri` — the Keycloak realm URL (e.g. `http://keycloak:8080/realms/enterprise-sso`) Spring Security uses to auto-discover the JWKS endpoint and validate token signatures/issuer.
-- `keycloak.admin.*` (custom properties) — server URL, realm, and service-account client credentials for the `keycloak-admin-client` to authenticate against Keycloak's Admin REST API.
+```yaml
+spring:
+  application:
+    name: identity-service
+
+  datasource:
+    url: jdbc:h2:mem:identitydb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+```
+An in-memory H2 database. `DB_CLOSE_DELAY=-1` keeps the database alive for the lifetime of the JVM (otherwise H2 destroys it the moment the last connection closes, which happens between requests with a connection pool).
+
+```yaml
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+```
+Enables H2's web console at `/h2-console` for inspecting the in-memory `documents` table during local development (JDBC URL: `jdbc:h2:mem:identitydb`, user `sa`, empty password).
+
+```yaml
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+    show-sql: false
+```
+`ddl-auto: update` lets Hibernate create/update the schema from the `@Entity` — fine for a demo, never for production (see [Interview Preparation](#10-interview-preparation)). `open-in-view: false` disables the Open Session In View anti-pattern so lazy-loading issues surface at the service boundary, not silently in the view layer.
+
+```yaml
+security:
+  jwt:
+    issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8080/realms/identity-realm}
+    jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:http://localhost:8080/realms/identity-realm/protocol/openid-connect/certs}
+```
+These are **custom** properties (not Spring Boot's built-in `spring.security.oauth2.resourceserver.jwt.issuer-uri`), consumed directly by `SecurityConfig`'s hand-built `JwtDecoder` bean. Two separate values exist because of the classic Docker-networking issue explained in depth in [Section 10](#10-interview-preparation):
+
+- **`issuer-uri`** — the address a client used to *obtain* the token from Keycloak (embedded inside the token's `iss` claim). Validated against, not fetched from.
+- **`jwk-set-uri`** — the address this app uses to *fetch Keycloak's public signing keys*. Inside Docker Compose this is the internal service name `keycloak`, not `localhost`.
+
+Both default to `localhost:8080` for running the app directly on the host (outside Docker); `docker-compose.yml` overrides them via environment variables so the containerized app can actually reach Keycloak.
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+```
+Exposes only `/actuator/health` and `/actuator/info` — deliberately not `/actuator/env` or `/actuator/beans`, which would leak configuration/secrets in a real deployment.
+
+```yaml
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+```
+Standard springdoc paths; both are explicitly permitted in `SecurityConfig` so the docs themselves don't require a token to *view* (calling the actual endpoints from "Try it out" still does).
+
+```yaml
+logging:
+  level:
+    org.springframework.security: INFO
+    com.medha.identityservice: DEBUG
+```
+`org.springframework.security: DEBUG` is invaluable while debugging token validation (uncomment locally to see exactly why a JWT was rejected) — kept at INFO by default to avoid leaking token contents into logs continuously.
 
 ---
 
@@ -183,13 +335,26 @@ When `application.yml` is added, expect (and this is the intended design, to be 
 
 | Path | Why it exists |
 |---|---|
-| `pom.xml` | Single source of truth for the module's identity (`com.medha:identity-service`), Java version, every dependency (web, security, JPA, OAuth2 resource server, Flyway, MySQL driver, Keycloak admin client, springdoc, Lombok, test/Testcontainers), and the build plugin that produces the runnable jar. |
-| `Dockerfile` | Multi-stage build: stage 1 (`maven:3.9.9-eclipse-temurin-21`) compiles and packages the app inside a throwaway builder image so the host machine doesn't need Maven/JDK installed; stage 2 (`eclipse-temurin:21-jre-jammy`) copies only the final jar into a slim JRE-only image, dramatically shrinking the shipped image and its attack surface. |
-| `.dockerignore` | Prevents `target/`, IDE metadata, `.git/`, and markdown files from being sent into the Docker build context — keeps `docker build` fast and the context free of irrelevant/sensitive files. |
-| `.gitignore` | Keeps compiled classes (`target/`, `*.class`), logs, and IDE-specific files (`.idea/`, `*.iml`, `.vscode/`) out of version control. |
-| `README.md` | This document. |
-
-Not yet present, expected in the next commit: `src/main/java/...` (application code), `src/main/resources/application.yml`, `src/main/resources/db/migration/` (Flyway SQL), `src/test/java/...` (tests), and a `docker-compose.yml` wiring together this service, Keycloak, and MySQL for local development.
+| `IdentityServiceApplication.java` | Standard Spring Boot entry point. Javadoc explicitly calls out that this app delegates *all* authentication to Keycloak. |
+| `config/SecurityConfig.java` | The heart of the project. Builds the `JwtDecoder` by hand (issuer/JWK split), wires the custom role converter, registers custom 401/403 handlers, and defines the permit-all allow-list (`/actuator/health`, Swagger). |
+| `config/OpenApiConfig.java` | Adds a Bearer-token security scheme to the generated OpenAPI spec so Swagger UI's "Authorize" button works. |
+| `controller/DocumentController.java` | The protected CRUD API. Each method carries its own `@PreAuthorize`, making the authorization rule visible right next to the endpoint it protects. |
+| `controller/UserInfoController.java` | A `/me` "whoami" endpoint that echoes back exactly the claims Keycloak put in the caller's token — makes the "no local user table" property tangible. |
+| `dto/DocumentRequest.java` | Inbound payload, carries Bean Validation annotations. Kept separate from the entity so persistence concerns don't leak into the wire contract. |
+| `dto/DocumentResponse.java` | Outbound representation; a static `from(Document)` factory keeps the mapping in one obvious place. |
+| `dto/ErrorResponse.java` | One JSON shape for every error in the app — 400, 401, 403, 404, 500 all look the same to a client. |
+| `dto/UserInfoResponse.java` | Response shape for `/me`. |
+| `entity/Document.java` | The JPA entity. Lombok `@Data`/`@Builder` remove getter/setter/builder boilerplate; `@PrePersist`/`@PreUpdate` manage timestamps automatically. |
+| `exception/GlobalExceptionHandler.java` | `@RestControllerAdvice` for everything that reaches the servlet layer: validation errors (400), not-found (404), method-security denials (403), and a catch-all (500). Its Javadoc explains *why* 401 is deliberately **not** handled here (see next row). |
+| `exception/ResourceNotFoundException.java` | Thrown by the service layer when an id doesn't exist. |
+| `repository/DocumentRepository.java` | A plain `JpaRepository<Document, Long>` — no custom queries needed for this demo's scope. |
+| `security/KeycloakRealmRoleConverter.java` | Translates Keycloak's `realm_access.roles` claim into `ROLE_*` Spring Security authorities. This is the single most important adapter class in the project — without it, `hasRole("ADMIN")` would never match anything, because Keycloak doesn't shape its claims the way Spring Security expects by default. |
+| `security/RestAuthenticationEntryPoint.java` | Fires when a request has no/invalid/expired token. Registered directly on the filter chain (not `@ExceptionHandler`) because token validation happens *before* the DispatcherServlet. |
+| `security/RestAccessDeniedHandler.java` | Fires when a *valid* token lacks the required role. Same filter-chain-level reasoning as above. |
+| `service/DocumentService.java` / `DocumentServiceImpl.java` | Interface + implementation split so the controller and its tests depend on an abstraction, not Hibernate specifics. `@Transactional` at the class level, `readOnly = true` on the two read methods. |
+| `keycloak/realm-import.json` | The entire Keycloak realm as data: roles, client, and two test users. Keycloak imports this file automatically on first boot — this is what makes the whole stack reproducible with zero manual console clicks. |
+| `docker-compose.yml` | Runs Keycloak (with the realm auto-imported) and the app together, wired with the issuer/JWK split described above. |
+| `Dockerfile` | Multi-stage build: compiles with Maven in a throwaway build stage, ships only the runtime JRE + jar in the final image, runs as a non-root user. |
 
 ---
 
@@ -197,85 +362,198 @@ Not yet present, expected in the next commit: `src/main/java/...` (application c
 
 ### Prerequisites
 
-- Java 21 (JDK) — only needed if building/running outside Docker.
-- Maven 3.9+ (or use the Docker multi-stage build, which bundles Maven — no local Maven install required).
-- Docker + Docker Compose.
+- Docker + Docker Compose
+- (Optional, for local dev outside Docker) JDK 21 and Maven
 
-### What you can run today
-
-There is no `docker-compose.yml` in this commit yet (it ships with the Keycloak + MySQL wiring in the next stage). Right now you can build and run the bare container image on its own:
+### 1. Start everything
 
 ```bash
-# Clone the repository
 git clone https://github.com/JNikhilSakthi/identity-service.git
 cd identity-service
-
-# Build the image (multi-stage: compiles with Maven, ships a slim JRE runtime)
-docker build -t identity-service:local .
-
-# Run it (it will fail fast without a database/Keycloak since there's no
-# application code or datasource configured yet — this simply proves the
-# image builds and the JVM starts)
-docker run --rm -p 8081:8081 identity-service:local
+docker compose up -d --build
 ```
 
-### Building the jar directly with Maven
+This starts two containers:
+- **`identity-service-keycloak`** on `localhost:8080` — boots in dev mode and, thanks to `--import-realm` plus the mounted `keycloak/realm-import.json`, automatically creates:
+  - realm `identity-realm`
+  - realm roles `USER` and `ADMIN`
+  - client `identity-service-client` (confidential, secret `identity-service-secret`, direct-access-grants enabled so curl can request tokens directly)
+  - user `admin-user` / password `admin123` — roles `ADMIN`, `USER`
+  - user `regular-user` / password `user123` — role `USER`
+- **`identity-service-app`** on `localhost:8081` — the Spring Boot API
+
+Keycloak's dev-mode startup + realm import takes roughly 15-25 seconds. Confirm it's ready:
 
 ```bash
-mvn -B clean package
-java -jar target/identity-service.jar
+curl -s http://localhost:8080/realms/identity-realm/.well-known/openid-configuration | head -c 200
+```
+A JSON response (not a connection error) means the realm is live.
+
+### 2. Get a test token
+
+```bash
+curl -s -X POST http://localhost:8080/realms/identity-realm/protocol/openid-connect/token \
+  -d "client_id=identity-service-client" \
+  -d "client_secret=identity-service-secret" \
+  -d "grant_type=password" \
+  -d "username=admin-user" \
+  -d "password=admin123" | python3 -m json.tool
 ```
 
-### Coming next
+Copy the `access_token` value from the response — that's your bearer token.
 
-A `docker-compose.yml` that brings up:
-1. `mysql:8` with a persisted volume and health check.
-2. `quay.io/keycloak/keycloak` in dev mode with a pre-provisioned `enterprise-sso` realm import.
-3. `identity-service` itself, wired to both via environment variables, with `depends_on` health-check gating.
+```bash
+export TOKEN="<paste access_token here>"
+```
 
-so that `docker compose up` gives you a fully working local SSO environment in one command.
+### 3. Call the protected API
+
+```bash
+curl -s http://localhost:8081/api/v1/documents \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 4. Explore interactively
+
+Swagger UI: [http://localhost:8081/swagger-ui.html](http://localhost:8081/swagger-ui.html) — click **Authorize** and paste a raw access token to try every endpoint from the browser.
+
+Keycloak admin console: [http://localhost:8080](http://localhost:8080) — login `admin` / `admin` (this is Keycloak's *own* bootstrap admin, unrelated to the `identity-realm` test users above).
+
+### 5. Shut down
+
+```bash
+docker compose down
+```
 
 ---
 
 ## 7. API Documentation
 
-No REST controllers exist in this commit, so there are no live endpoints to document yet. Once the security config and controllers land, springdoc-openapi (already on the classpath) will auto-generate:
+Base URL: `http://localhost:8081`
 
-- OpenAPI 3 spec at `/v3/api-docs`
-- Interactive Swagger UI at `/swagger-ui.html`
+All endpoints below (except the two health/docs ones) require `Authorization: Bearer <access_token>`.
 
-Planned endpoints for this service (to be implemented, listed here so the intended contract is clear rather than fabricated):
-
-| Method | Path | Purpose | Auth |
+| Method | Path | Required role | Description |
 |---|---|---|---|
-| `GET` | `/api/users/me` | Return the authenticated user's profile, derived from JWT claims | Bearer JWT (any authenticated user) |
-| `POST` | `/api/users/provision` | Create a user in Keycloak via the admin client (e.g. from an internal HR feed) | Bearer JWT (`ADMIN` role) |
-| `GET` | `/api/users/{id}/roles` | List a user's realm/client roles | Bearer JWT (`ADMIN` role) |
-| `GET` | `/actuator/health` | Liveness/readiness probe | Public (or restricted per environment) |
+| POST | `/api/v1/documents` | `USER` or `ADMIN` | Create a document |
+| GET | `/api/v1/documents` | `USER` or `ADMIN` | List all documents |
+| GET | `/api/v1/documents/{id}` | `USER` or `ADMIN` | Get one document |
+| PUT | `/api/v1/documents/{id}` | `ADMIN` | Update a document |
+| DELETE | `/api/v1/documents/{id}` | `ADMIN` | Delete a document |
+| GET | `/api/v1/users/me` | any authenticated user | Return the caller's identity claims from their JWT |
+| GET | `/actuator/health` | none | Liveness probe |
+| GET | `/swagger-ui.html` | none (calling endpoints from it still needs a token) | Interactive API docs |
 
-These will be documented with real request/response JSON once implemented — no sample payloads are included here to avoid documenting behavior that doesn't exist yet.
+### Create a document (USER or ADMIN)
+
+```bash
+curl -s -X POST http://localhost:8081/api/v1/documents \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Onboarding Guide","content":"Welcome to the company"}'
+```
+```json
+{
+  "id": 1,
+  "title": "Onboarding Guide",
+  "content": "Welcome to the company",
+  "ownerUsername": "admin-user",
+  "createdAt": "2026-07-22T16:52:47.16Z",
+  "updatedAt": "2026-07-22T16:52:47.16Z"
+}
+```
+
+### List documents
+
+```bash
+curl -s http://localhost:8081/api/v1/documents -H "Authorization: Bearer $TOKEN"
+```
+
+### Update a document (ADMIN only)
+
+```bash
+curl -s -X PUT http://localhost:8081/api/v1/documents/1 \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Onboarding Guide v2","content":"Updated content"}'
+```
+Calling this with a `regular-user` (USER-only) token instead returns:
+```json
+{
+  "timestamp": "2026-07-22T16:52:47.27Z",
+  "status": 403,
+  "error": "Forbidden",
+  "message": "Your token is valid but lacks the realm role required for this operation",
+  "path": "/api/v1/documents/1",
+  "details": []
+}
+```
+
+### Delete a document (ADMIN only)
+
+```bash
+curl -s -X DELETE http://localhost:8081/api/v1/documents/1 -H "Authorization: Bearer $ADMIN_TOKEN"
+# HTTP 204 No Content
+```
+
+### Whoami
+
+```bash
+curl -s http://localhost:8081/api/v1/users/me -H "Authorization: Bearer $TOKEN"
+```
+```json
+{
+  "subject": "9457f6dc-da64-4057-ae68-077dd7652d1a",
+  "preferredUsername": "regular-user",
+  "email": "regular-user@identity-service.local",
+  "realmRoles": ["USER"]
+}
+```
+
+### No token
+
+```bash
+curl -s http://localhost:8081/api/v1/documents
+```
+```json
+{
+  "timestamp": "2026-07-22T16:52:46.98Z",
+  "status": 401,
+  "error": "Unauthorized",
+  "message": "Missing, expired, or invalid Keycloak access token: Full authentication is required to access this resource",
+  "path": "/api/v1/documents",
+  "details": []
+}
+```
 
 ---
 
 ## 8. Testing
 
-No test sources exist yet (`src/test/java` is not present in this commit). The POM already declares the intended testing stack, which dictates the testing strategy for the next stage:
-
-- **`spring-boot-starter-test`**: unit tests and `@SpringBootTest` slice tests (JUnit 5, AssertJ, Mockito).
-- **`spring-security-test`**: lets security-focused tests use `@WithMockUser` / `SecurityMockMvcRequestPostProcessors.jwt()` to simulate authenticated Keycloak tokens without standing up a real Keycloak server for every test.
-- **`testcontainers` (`junit-jupiter`, `mysql`)** with the Testcontainers BOM `1.20.1`: integration tests will spin up a real, throwaway MySQL container so repository/Flyway-migration behavior is verified against the actual database engine rather than an in-memory substitute (e.g. H2), which is important because Flyway's `flyway-mysql` dialect handling and MySQL-specific SQL should be tested against MySQL itself.
-
-Once tests exist, they'll be run the standard Maven way:
+Run the full suite:
 
 ```bash
 mvn test
 ```
 
+16 tests, all passing, in three classes:
+
+- **`DocumentServiceImplTest`** (7 tests) — pure Mockito unit tests of the service layer: create persists with the correct owner, `findAll` maps every entity, `findById`/`update`/`delete` all throw `ResourceNotFoundException` for a missing id and never touch the repository's write methods when they do, `update` applies new field values correctly.
+- **`DocumentControllerSecurityTest`** (8 tests) — the security-focused integration test this project is really about, using `@WebMvcTest` + `SecurityMockMvcRequestPostProcessors.jwt()` to fabricate pre-validated JWTs with specific authorities (no real Keycloak needed to run this test):
+  - anonymous request → 401
+  - `ROLE_USER` can list and create → 200/201
+  - `ROLE_USER` attempting update/delete → 403
+  - `ROLE_ADMIN` can update and delete → 200/204
+  - invalid payload (blank title/content) → 400 with field-level error details
+- **`IdentityServiceApplicationTests`** (1 test) — a full `@SpringBootTest` context-load smoke test, proving the entire app (H2 datasource, JPA, the hand-built `JwtDecoder` bean, method security) wires up cleanly with **no Keycloak instance running** — possible because `NimbusJwtDecoder` builds a lazy JWK client that only reaches out on first token validation, never at startup.
+
+This whole matrix was also re-verified against a **live** `docker compose up` stack (real Keycloak, real tokens, real HTTP calls) while building this project — see the request/response examples in [Section 7](#7-api-documentation), which are taken directly from that run.
+
 ---
 
 ## 9. Docker
 
-### `Dockerfile` walkthrough
+### `Dockerfile` (multi-stage)
 
 ```dockerfile
 # ---- Build stage ----
@@ -285,12 +563,7 @@ COPY pom.xml .
 RUN mvn -B -q dependency:go-offline
 COPY src ./src
 RUN mvn -B -q clean package -DskipTests
-```
-- Uses an image that bundles Maven 3.9.9 with Eclipse Temurin JDK 21, so the container itself does the compiling — no dependency on the host machine's tooling.
-- `COPY pom.xml .` followed by `dependency:go-offline` **before** `COPY src ./src` is a deliberate Docker layer-caching optimization: as long as `pom.xml` doesn't change, Docker reuses the cached dependency-download layer even when application source changes, making rebuilds much faster.
-- `-DskipTests` in the image build keeps the container build focused on producing an artifact; tests are expected to run in CI, not inside the image build.
 
-```dockerfile
 # ---- Runtime stage ----
 FROM eclipse-temurin:21-jre-jammy AS runtime
 WORKDIR /app
@@ -301,62 +574,58 @@ USER spring
 EXPOSE 8081
 ENTRYPOINT ["java", "-XX:+UseContainerSupport", "-jar", "/app/app.jar"]
 ```
-- Switches to a **JRE-only** base image (`eclipse-temurin:21-jre-jammy`) for runtime — no JDK, no Maven, no source — which minimizes final image size and removes build tooling from the attack surface.
-- Creates a dedicated non-root `spring` system user/group and switches to it with `USER spring` before running the app — a standard container-hardening practice so a compromised app process doesn't run as root inside the container.
-- Only the built jar is copied across stages (`COPY --from=build ...`), so none of the Maven cache, source tree, or build tooling from stage 1 ends up in the shipped image.
-- `EXPOSE 8081` documents (rather than fabricates) the port this service listens on — matching the `-p 8081:8081` used in the run command above.
-- `-XX:+UseContainerSupport` explicitly enables the JVM's container-aware memory/CPU detection (default-on in modern JDKs, but kept explicit here) so heap sizing respects the container's cgroup limits rather than the host's full resources.
+- **Build stage**: uses the full Maven+JDK image, copies `pom.xml` first and runs `dependency:go-offline` before copying source, so Docker's layer cache keeps dependencies cached across rebuilds that only change Java code.
+- **Runtime stage**: uses a slim JRE-only base image (no compiler, no Maven — smaller attack surface and smaller image), copies only the built jar, and runs as a dedicated non-root `spring` user.
 
-### `.dockerignore`
+### `docker-compose.yml`
 
-Excludes `target/`, IDE metadata, `.git/`, `.gitignore`, markdown files, and the `Dockerfile`/`docker-compose.yml` themselves from the build context sent to the Docker daemon — keeping builds fast and avoiding accidentally baking documentation or VCS metadata into a layer.
+Two services on a shared bridge network (`identity-net`):
 
-### docker-compose
+- **`keycloak`** — `quay.io/keycloak/keycloak:25.0.6`, started with `start-dev --import-realm`. `KC_HOSTNAME: localhost` pins the `iss` claim of every issued token to `http://localhost:8080/...`, matching what a host-side curl/Postman/browser actually used to reach it. The realm-import file is bind-mounted read-only into Keycloak's auto-import directory (`/opt/keycloak/data/import/`).
+- **`identity-service`** — built from the `Dockerfile` above, given two environment variables that solve the issuer-vs-JWKs Docker networking split explained in [Section 10](#10-interview-preparation):
+  - `KEYCLOAK_ISSUER_URI=http://localhost:8080/realms/identity-realm` (validate against — matches tokens' `iss`)
+  - `KEYCLOAK_JWK_SET_URI=http://keycloak:8080/realms/identity-realm/protocol/openid-connect/certs` (fetch keys from — Docker-internal DNS name)
 
-Not present yet in this commit. It will be added alongside the application source in the next stage, wiring Keycloak + MySQL + this service together for one-command local startup.
+### `keycloak/realm-import.json`
+
+A complete, versioned description of the realm: roles, one confidential client with direct-access-grants enabled (so this README's curl examples work without a browser redirect flow), and two seeded users with passwords set as permanent (`"temporary": false`) so first login doesn't force a password reset. Because this file is checked into source control, the entire identity configuration is reproducible and code-reviewable — the same principle as "infrastructure as code," applied to IAM.
 
 ---
 
 ## 10. Interview Preparation
 
-### Keycloak-specific FAQs
+**Q: What's the difference between authentication and authorization, and where does each happen in this project?**
+Authentication ("who are you") happens entirely inside Keycloak when the user submits credentials to the token endpoint. Authorization ("what can you do") happens partly in Keycloak (which roles get assigned to which user) and partly in this app (which roles each endpoint requires, via `@PreAuthorize`). The app never authenticates anyone — it only authorizes, based on a token it trusts because Keycloak signed it.
 
-**Q: What's the difference between a realm, a client, and a role in Keycloak?**
-A realm is an isolated tenant (its own users, roles, clients, login theme). A client is an application registered inside a realm (e.g. this Spring Boot service, or a frontend SPA) that requests tokens on behalf of users. A role is a permission label — either a *realm role* (global to the realm) or a *client role* (scoped to one client) — assigned to users or groups and surfaced inside the JWT's `realm_access.roles` / `resource_access.<client>.roles` claims.
+**Q: How does the resource server actually verify a JWT without calling Keycloak on every request?**
+Keycloak publishes its public signing keys at a well-known JWK Set endpoint (`/realms/{realm}/protocol/openid-connect/certs`). The resource server fetches and caches that key set (via `NimbusJwtDecoder`), then verifies each token's signature locally using ordinary asymmetric cryptography (RS256 by default in Keycloak). It also checks the `exp` (expiry) and `iss` (issuer) claims locally. No network call to Keycloak is needed per API request — only when the key set needs refreshing (e.g. after key rotation).
 
-**Q: How does a Spring Boot resource server validate a Keycloak-issued JWT without calling Keycloak on every request?**
-`spring-boot-starter-oauth2-resource-server`, configured with `spring.security.oauth2.resourceserver.jwt.issuer-uri` pointing at the realm, fetches Keycloak's JWKS (JSON Web Key Set) once (and caches/refreshes it periodically), then validates each incoming JWT's signature locally against those public keys, plus checks standard claims (`exp`, `iss`). This makes token validation stateless and fast — no network round-trip to Keycloak per request.
+**Q: What is a realm role vs a client role in Keycloak?**
+A **realm role** (e.g. `ADMIN`, `USER` in this project) is global to the whole realm — any client/application in that realm can check it. A **client role** is scoped to one specific client/application (e.g. an `identity-service-client`-only role that wouldn't mean anything to a different app in the same realm). This project deliberately uses realm roles because the roadmap frames Keycloak as *enterprise-wide* SSO — one identity, meaningful across every future service, not siloed per app.
 
-**Q: Why use `keycloak-admin-client` instead of hand-rolling REST calls to Keycloak's Admin API?**
-The admin client is a typed Java SDK over Keycloak's Admin REST API — it handles auth (service account token acquisition), retries, and gives typed representations (`UserRepresentation`, `RoleRepresentation`, etc.) instead of hand-built JSON, reducing the chance of drifting out of sync with the Admin API's actual contract across Keycloak versions.
+**Q: Why does this project build a custom `JwtDecoder` bean instead of just setting `spring.security.oauth2.resourceserver.jwt.issuer-uri`?**
+Because Spring Boot's single-property auto-configuration assumes the issuer URI is reachable *and* is where the JWKs live. That's false in this Docker Compose setup: Keycloak's issuer, embedded in every token, is `http://localhost:8080/...` (what the human/curl used from the host), but `identity-service`'s own container can't reach `localhost:8080` and land on Keycloak — `localhost` inside a container means *that container itself*. The fix: fetch keys from the Docker-internal address (`http://keycloak:8080/...`) while still validating the `iss` claim against the external one. This is one of the most common real-world Keycloak-in-Docker mistakes, and the reason for `SecurityConfig`'s hand-built `JwtDecoder`.
 
-**Q: Access token vs. refresh token vs. ID token — what's each for?**
-Access token: presented to resource servers (like this service) to authorize API calls; short-lived. Refresh token: exchanged for a new access token without re-prompting login; longer-lived, must be stored/handled more carefully. ID token: OIDC-specific, carries identity claims about the authenticated user for the *client application* itself (not for calling APIs).
+**Q: What happens to a token after it expires? What's a refresh token for?**
+The `access_token` (300 seconds / 5 minutes in this realm's config) is short-lived by design — if it leaks, the exposure window is small. Once expired, the resource server rejects it with 401, and the client must use its **refresh token** (issued alongside the access token, much longer-lived) to obtain a new access token from Keycloak's token endpoint without asking the user to log in again. This project's curl examples don't show refresh-token exchange for brevity, but production clients (SPAs, mobile apps) always implement it.
 
-### Common mistakes
+**Q: Why does this API use the Resource Owner Password Credentials (ROPC) grant in the README examples? Isn't that deprecated?**
+Yes — ROPC (`grant_type=password`) requires the client to handle the user's raw password directly, which defeats much of the point of SSO, and OAuth 2.1 removes it entirely. It's used here purely as a **local testing convenience** — it lets this README's curl examples fetch a token in one command without standing up a browser-based login flow. A real frontend would use the **Authorization Code flow with PKCE** instead, where the user is redirected to Keycloak's own hosted login page and never enters credentials into the client application at all.
 
-- **Trusting unsigned/unverified claims from the token without checking the signature and issuer** — always let the resource-server library do signature+issuer validation; never manually decode a JWT's payload and trust it without verification.
-- **Storing Keycloak client secrets in `application.yml` committed to git** — these must come from environment variables or a secrets manager, never hardcoded.
-- **Using `ddl-auto: update`/`create` against a production-shaped schema instead of Flyway migrations** — this project deliberately includes `flyway-core`/`flyway-mysql` precisely so schema changes are explicit, versioned SQL files instead of Hibernate's inferred DDL.
-- **Conflating authentication (who you are — handled by Keycloak) with authorization (what you can do — enforced in this service via role/scope checks)** — a valid JWT proves identity, not permission; endpoint-level role checks are still required.
-- **Long-lived access tokens** to avoid dealing with refresh flows — this widens the blast radius of a leaked token; short expiry + refresh tokens is the standard tradeoff.
+**Q: What's the single most common mistake when hooking Spring Boot up to Keycloak?**
+Exactly the issuer/JWKs split covered above — configuring a single `issuer-uri` that works when testing against localhost from a laptop, then having everything break the moment the app is containerized because the container can't resolve `localhost` back to the Keycloak container. A close second: forgetting that Keycloak's roles live under the *nested* `realm_access.roles` claim rather than the flat `scope` claim Spring Security's `JwtAuthenticationConverter` expects by default — without a custom converter (`KeycloakRealmRoleConverter` here), every `@PreAuthorize("hasRole(...))")` check silently fails, and everyone gets 403 forever.
 
-### Production considerations
+**Q: How would you run Keycloak in production, differently from this demo?**
+This demo uses `start-dev`, an in-memory H2-backed Keycloak instance meant only for local development — it loses all data on restart and is explicitly unsupported for production. Production Keycloak requires: `kc.sh start` (production mode) backed by a real database (Postgres/MySQL) for persistent realm/user storage; running multiple Keycloak nodes behind a load balancer for HA, with either a distributed cache (Infinispan clustering) or a shared external cache for session replication; TLS termination (Keycloak refuses non-HTTPS traffic outside dev mode by default); and a proper `KC_HOSTNAME` matching the real public domain so issued tokens' `iss` claims are stable across every node.
 
-- Run Keycloak in production mode (not `start-dev`), behind TLS, with a production-grade database backing Keycloak itself (separate from this service's MySQL instance).
-- Rotate signing keys periodically; the resource server's JWKS caching should respect `Cache-Control`/refresh intervals so key rotation doesn't cause a validation outage.
-- Externalize all Keycloak/DB credentials via environment variables or a vault, never in version control — reinforced by the fact that no secrets are (or should be) present in `pom.xml`/`Dockerfile` here.
-- Health-check and readiness-gate this service's startup on both MySQL and Keycloak being reachable, so it doesn't accept traffic before its dependencies are up (relevant once `docker-compose.yml`'s `depends_on: condition: service_healthy` is added).
-- Keep the JRE-only runtime image (as this Dockerfile already does) and run as a non-root user (as this Dockerfile already does) — both reduce the container's attack surface.
+**Q: Why H2 instead of MySQL/Postgres here, given the roadmap's "MySQL where relevant" constraint?**
+Project 1 (`springboot-jpa-crud-demo` / `employee-service`) already dedicates itself to MySQL + JPA fundamentals. This project's whole purpose is isolating Keycloak/SSO as a single skill — adding a second, unrelated persistence concern here would dilute that focus and duplicate project 1's learning goal. H2 in-memory exists purely so the `Document` CRUD resource has somewhere to live.
 
-### Performance notes
-
-- JWT validation is local (signature check against cached JWKS), so this service's authorization overhead per request is CPU-bound (crypto verification) rather than network-bound — it does *not* call Keycloak per request, which is what makes the resource-server pattern scale horizontally without hammering the identity provider.
-- `-XX:+UseContainerSupport` (already set in the `Dockerfile`) ensures the JVM sizes its heap based on the container's actual memory limit rather than the host's, which matters once this image runs under Kubernetes/Docker Compose resource limits.
-- Flyway migrations run once at startup, not per-request, so their cost is a one-time startup latency cost, not a steady-state performance concern.
+**Q: What does `ddl-auto: update` mean, and why is it wrong for production?**
+It tells Hibernate to inspect the entity classes at startup and alter the database schema to match — convenient for a demo with a from-scratch H2 database, but dangerous in production: Hibernate's auto-migration can silently drop columns, guess wrong data types, or lock a large table during a rolling deploy. Production systems use versioned, reviewed migration tools (Flyway/Liquibase) with `ddl-auto: validate` or `none` so schema changes are explicit and auditable.
 
 ---
 
-## License
+## 11. License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](./LICENSE).
