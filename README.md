@@ -2,8 +2,8 @@
 
 **Enterprise SSO for a REST API, powered by Keycloak — the app never sees a password, only a JWT it can cryptographically verify.**
 
-![Java](https://img.shields.io/badge/Java-21-orange)
-![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.4-brightgreen)
+![Java](https://img.shields.io/badge/Java-25-orange)
+![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.0.6-brightgreen)
 ![Keycloak](https://img.shields.io/badge/Keycloak-25.0.6-blue)
 ![Maven](https://img.shields.io/badge/Build-Maven-red)
 ![Docker](https://img.shields.io/badge/Container-Docker-2496ED)
@@ -229,18 +229,19 @@ identity-service/
 
 | Component | Choice | Why |
 |---|---|---|
-| Language | Java 21 | LTS, required by the roadmap |
-| Framework | Spring Boot 3.3.4 | Parent for all starters/versions |
+| Language | Java 25 | Current release, migrated from Java 21 |
+| Framework | Spring Boot 4.0.6 | Parent for all starters/versions (Spring Framework 7 / Spring Security 7 underneath) |
 | Identity Provider | Keycloak 25.0.6 (`quay.io/keycloak/keycloak`) | Free, open-source, industry-standard OIDC/SAML IAM server |
 | Security | `spring-boot-starter-security` + `spring-boot-starter-oauth2-resource-server` | Resource-server-only; no login form, no session, no password ever touches this app |
 | Persistence | `spring-boot-starter-data-jpa` + H2 (in-memory) | Minimal on purpose — MySQL/JPA fundamentals already covered in project 1 (`springboot-jpa-crud-demo`); this project isolates Keycloak |
 | Validation | `spring-boot-starter-validation` (Jakarta Bean Validation) | `@NotBlank`/`@Size` on request DTOs |
-| API docs | springdoc-openapi (Swagger UI) | Interactive docs with Bearer-token "Try it out" |
-| Boilerplate reduction | Lombok | `@Data`/`@Builder` on the entity |
+| API docs | springdoc-openapi 3.0.3 (Swagger UI) | Interactive docs with Bearer-token "Try it out"; the 2.8.x line still targets Spring Security 6/Spring Boot 3, so 3.x is required here |
+| JSON | Jackson 3 (`tools.jackson.databind.ObjectMapper`) | Spring Boot 4's default JSON engine; the hand-built `RestAccessDeniedHandler`/`RestAuthenticationEntryPoint` error envelopes use it directly |
+| Boilerplate reduction | Lombok 1.18.44 | `@Data`/`@Builder` on the entity; pinned explicitly because JDK 25 needs Lombok >= 1.18.42 for annotation processing to work at all, and the Maven Compiler Plugin needs an explicit `annotationProcessorPaths` entry too (javac's implicit classpath-based processor discovery silently no-ops on this JDK) |
 | Observability | `spring-boot-starter-actuator` | `/actuator/health` |
-| Testing | JUnit 5, Mockito, `spring-security-test` | Unit tests for the service layer, `@WebMvcTest` + `SecurityMockMvcRequestPostProcessors.jwt()` for the security matrix |
+| Testing | JUnit 5, Mockito, `spring-boot-starter-webmvc-test`, `spring-boot-starter-security-test` | Unit tests for the service layer, `@WebMvcTest` + `SecurityMockMvcRequestPostProcessors.jwt()` for the security matrix (Spring Boot 4 split `@WebMvcTest` and the Security test auto-configuration out of the generic `spring-boot-starter-test` into their own per-technology test starters) |
 | Build | Maven | Multi-module-free single build |
-| Containers | Docker + Docker Compose | Keycloak + app, zero manual setup |
+| Containers | Docker (`maven:3.9.16-eclipse-temurin-25` / `eclipse-temurin:25-jre-jammy`) + Docker Compose | Keycloak + app, zero manual setup |
 
 ---
 
@@ -363,7 +364,7 @@ logging:
 ### Prerequisites
 
 - Docker + Docker Compose
-- (Optional, for local dev outside Docker) JDK 21 and Maven
+- (Optional, for local dev outside Docker) JDK 25 and Maven
 
 ### 1. Start everything
 
@@ -557,7 +558,7 @@ This whole matrix was also re-verified against a **live** `docker compose up` st
 
 ```dockerfile
 # ---- Build stage ----
-FROM maven:3.9.9-eclipse-temurin-21 AS build
+FROM maven:3.9.16-eclipse-temurin-25 AS build
 WORKDIR /workspace
 COPY pom.xml .
 RUN mvn -B -q dependency:go-offline
@@ -565,7 +566,7 @@ COPY src ./src
 RUN mvn -B -q clean package -DskipTests
 
 # ---- Runtime stage ----
-FROM eclipse-temurin:21-jre-jammy AS runtime
+FROM eclipse-temurin:25-jre-jammy AS runtime
 WORKDIR /app
 RUN addgroup --system spring && adduser --system --ingroup spring spring
 COPY --from=build /workspace/target/identity-service.jar app.jar

@@ -7,7 +7,7 @@
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
-    <version>3.3.4</version>
+    <version>4.0.6</version>
     <relativePath/>
   </parent>
 
@@ -18,8 +18,20 @@
   <description>Enterprise SSO System - Keycloak-backed identity service (Project 4: springboot-keycloak-sso-demo)</description>
 
   <properties>
-    <java.version>21</java.version>
-    <springdoc.version>2.6.0</springdoc.version>
+    <java.version>25</java.version>
+    <!-- springdoc 2.8.x is built against Spring Security 6 / Spring Boot 3
+         (its parent POM still pins spring-security-oauth2-authorization-server
+         1.4.x). Spring Boot 4 needs the springdoc 3.x line, which targets
+         Spring Framework 7 / Spring Security 7 (spring-security-oauth2
+         -authorization-server 2.x), verified against Maven Central before
+         picking this version. -->
+    <springdoc.version>3.0.3</springdoc.version>
+    <!-- Spring Boot 4.0.6 already manages lombok.version=1.18.46, but we pin
+         1.18.44 explicitly per project convention (sibling projects use it).
+         Both post-date Lombok 1.18.42, the release that fixed JDK 25
+         annotation-processing/javac errors, verified via the Lombok
+         changelog, not assumed. -->
+    <lombok.version>1.18.44</lombok.version>
   </properties>
 
   <dependencies>
@@ -84,9 +96,28 @@
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- Spring Boot 4 split @WebMvcTest and friends out of the generic test
+         starter into their own per-technology test module. Without this,
+         DocumentControllerSecurityTest fails to compile with "package
+         org.springframework.boot.test.autoconfigure.web.servlet does not
+         exist", confirmed by an actual build failure during this migration,
+         not assumed from release notes. -->
     <dependency>
-      <groupId>org.springframework.security</groupId>
-      <artifactId>spring-security-test</artifactId>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webmvc-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Plain org.springframework.security:spring-security-test alone is not
+         enough under Spring Boot 4: the Boot-specific
+         org.springframework.boot:spring-boot-security-test module is what
+         registers the WebMvcTest.includes descriptor that wires Spring
+         Security into a @WebMvcTest slice (without it, filterChain() fails
+         with "No qualifying bean of type HttpSecurity available", confirmed
+         by an actual test run during this migration). The starter below
+         pulls in both. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security-test</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -104,6 +135,27 @@
               <artifactId>lombok</artifactId>
             </exclude>
           </excludes>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <!-- On JDK 25, javac's implicit annotation-processor discovery via
+               -classpath silently finds no processors (no error, no getters
+               or setters generated; confirmed by isolated javac reproduction
+               during this migration). Declaring the Lombok processor
+               explicitly on the processor path is what actually restores
+               working annotation processing here; pinning lombok.version
+               alone (see the property above) is necessary but NOT
+               sufficient. -->
+          <annotationProcessorPaths>
+            <path>
+              <groupId>org.projectlombok</groupId>
+              <artifactId>lombok</artifactId>
+              <version>${lombok.version}</version>
+            </path>
+          </annotationProcessorPaths>
         </configuration>
       </plugin>
     </plugins>

@@ -1,6 +1,5 @@
 package com.medha.identityservice.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.medha.identityservice.config.SecurityConfig;
 import com.medha.identityservice.dto.DocumentRequest;
 import com.medha.identityservice.dto.DocumentResponse;
@@ -10,12 +9,13 @@ import com.medha.identityservice.security.RestAuthenticationEntryPoint;
 import com.medha.identityservice.service.DocumentService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
 import java.util.List;
@@ -51,7 +51,7 @@ class DocumentControllerSecurityTest {
     @Autowired
     private ObjectMapper objectMapper;
 
-    @MockBean
+    @MockitoBean
     private DocumentService documentService;
 
     @Test
