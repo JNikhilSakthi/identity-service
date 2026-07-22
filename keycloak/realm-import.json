@@ -1,0 +1,80 @@
+{
+  "realm": "identity-realm",
+  "enabled": true,
+  "displayName": "Identity Realm (identity-service demo)",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+
+  "roles": {
+    "realm": [
+      {
+        "name": "USER",
+        "description": "Can create and read documents"
+      },
+      {
+        "name": "ADMIN",
+        "description": "Can create, read, update and delete documents"
+      }
+    ]
+  },
+
+  "clients": [
+    {
+      "clientId": "identity-service-client",
+      "name": "identity-service",
+      "description": "Confidential client used by the identity-service API and by curl/Postman for local token acquisition",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "identity-service-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:8081/*"
+      ],
+      "webOrigins": [
+        "http://localhost:8081"
+      ],
+      "fullScopeAllowed": true
+    }
+  ],
+
+  "users": [
+    {
+      "username": "admin-user",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "admin-user@identity-service.local",
+      "firstName": "Ada",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "admin123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["ADMIN", "USER"]
+    },
+    {
+      "username": "regular-user",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "regular-user@identity-service.local",
+      "firstName": "Uma",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "user123",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["USER"]
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+services:
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0.6
+    container_name: identity-service-keycloak
+    command:
+      - start-dev
+      - --import-realm
+    environment:
+      # Keycloak 25.x bootstrap admin credentials (Keycloak's own admin
+      # console login, unrelated to the ADMIN/USER *realm* roles our app
+      # checks -- those live inside identity-realm, provisioned below).
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      # KC_HOSTNAME fixes the `iss` (issuer) claim embedded in every token
+      # Keycloak issues to exactly this value. It must match what
+      # SecurityConfig's `security.jwt.issuer-uri` validates against below.
+      KC_HOSTNAME: localhost
+      KC_HOSTNAME_PORT: "8080"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keycloak/realm-import.json:/opt/keycloak/data/import/realm-import.json:ro
+    networks:
+      - identity-net
+
+  identity-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: identity-service-app
+    environment:
+      # Validate the `iss` claim against the same host:port a human/curl
+      # used to obtain the token (the browser/host-visible address).
+      KEYCLOAK_ISSUER_URI: http://localhost:8080/realms/identity-realm
+      # But fetch the signing keys over the Docker-internal network, where
+      # "keycloak" resolves to the Keycloak container, not "localhost"
+      # (which inside this container would mean itself).
+      KEYCLOAK_JWK_SET_URI: http://keycloak:8080/realms/identity-realm/protocol/openid-connect/certs
+    ports:
+      - "8081:8081"
+    depends_on:
+      - keycloak
+    networks:
+      - identity-net
+
+networks:
+  identity-net:
+    driver: bridge

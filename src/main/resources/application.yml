@@ -1,0 +1,60 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: identity-service
+
+  # H2 in-memory database. Persistence tech isn't the focus of this project
+  # (see project 1: springboot-jpa-crud-demo); this exists only so the
+  # Document CRUD resource has somewhere to live.
+  datasource:
+    url: jdbc:h2:mem:identitydb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+    show-sql: false
+
+# Spring Boot's auto-configured resource server only accepts a single
+# `issuer-uri`, which cannot express "fetch keys from the Docker-internal
+# Keycloak address, but validate the `iss` claim against the externally
+# visible one" (see SecurityConfig javadoc). So we deliberately do NOT set
+# spring.security.oauth2.resourceserver.jwt.issuer-uri here, and instead
+# define our own JwtDecoder @Bean fed by these two custom properties.
+security:
+  jwt:
+    issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8080/realms/identity-realm}
+    jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:http://localhost:8080/realms/identity-realm/protocol/openid-connect/certs}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    org.springframework.security: INFO
+    com.medha.identityservice: DEBUG
